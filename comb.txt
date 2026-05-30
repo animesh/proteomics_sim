@@ -1,0 +1,346 @@
+=== ../proteomics_sim/check.py ===
+import os
+import sys
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import numpy as np
+import pandas as pd
+from digest import generate_peptides
+from chromatography import peak
+from fragmentation import fragment_efficiency
+from dda import acquire as dda_acquire
+from ndia import acquire as dia_acquire
+from quantification import cv_table
+from simulator import ProteomicsStudy
+def assert_true(condition, message):
+    if not condition:
+        raise AssertionError(message)
+def test_digest():
+    peptides = generate_peptides(n=50, seed=1)
+    assert_true(len(peptides) == 50, "digest.generate_peptides returned incorrect row count")
+    expected_columns = {"peptide_id", "protein_id", "mz", "charge", "rt", "abundance", "length", "optimal_ce",}
+    assert_true(set(peptides.columns) == expected_columns, "digest.generate_peptides returned wrong columns")
+    assert_true(peptides["mz"].between(400, 1300).all(), "mz values out of expected range")
+    assert_true(peptides["charge"].isin([2, 3, 4]).all(), "unexpected charge states")
+def test_chromatography():
+    t = np.linspace(0, 100, 11)
+    values = peak(rt=50, abundance=1e6, t=t, width=8)
+    assert_true(values.shape == (11,), "chromatography.peak returned wrong shape")
+    assert_true(np.all(values >= 0), "chromatography.peak returned negative intensities")
+    assert_true(values.max() == values[5], "chromatography.peak peak center not at expected index")
+def test_fragmentation():
+    eff_same = fragment_efficiency(30, 30)
+    eff_off = fragment_efficiency(35, 30)
+    assert_true(0 < eff_same <= 1, "fragment_efficiency should be between 0 and 1")
+    assert_true(eff_off < eff_same, "fragment_efficiency should decrease away from optimal CE")
+def test_dda():
+    peptides = generate_peptides(n=30, seed=2)
+    time_axis = np.linspace(30, 90, 7)
+    dda_table = dda_acquire(peptides, time_axis, topn=5, dynamic_exclusion=5)
+    assert_true("peptide_id" in dda_table.columns and "ms2" in dda_table.columns, "dda.acquire returned wrong columns")
+    assert_true((dda_table["ms2"] >= 0).all(), "dda.acquire produced negative MS2 intensities")
+def test_ndia():
+    peptides = generate_peptides(n=20, seed=3)
+    time_axis = np.linspace(30, 90, 5)
+    dia_table = dia_acquire(peptides, time_axis, window=5.0)
+    assert_true(set(dia_table.columns) == {"low", "high", "signal"}, "ndia.acquire returned wrong columns")
+    assert_true((dia_table["signal"] >= 0).all(), "ndia.acquire produced negative signal values")
+def test_quantification():
+    df = pd.DataFrame({"peptide_id": [0, 0, 1, 1], "ms1_area": [100.0, 120.0, 50.0, 60.0],})
+    cv = cv_table(df, "ms1_area")
+    assert_true("cv" in cv.columns, "quantification.cv_table did not compute cv")
+    assert_true(cv.loc[0, "cv"] > 0, "quantification.cv_table computed an invalid cv")
+def test_simulator():
+    study = ProteomicsStudy(seed=42)
+    results = study.run(n_peptides=100, n_replicates=2, gradient_min=10, dia_window=2.0)
+    assert_true(set(results.keys()) == {"ms1", "dda", "dia", "cv"}, "ProteomicsStudy.run returned unexpected keys")
+    assert_true("peptide_id" in results["ms1"].columns, "ProteomicsStudy.run ms1 output missing peptide_id")
+    assert_true("ms2" in results["dda"].columns, "ProteomicsStudy.run dda output missing ms2")
+    assert_true("signal" in results["dia"].columns, "ProteomicsStudy.run dia output missing signal")
+def main():
+    tests = [test_digest, test_chromatography, test_fragmentation, test_dda, test_ndia, test_quantification, test_simulator,]
+    for test in tests:
+        print(f"Running {test.__name__}...", end=" ")
+        test()
+        print("PASSED")
+    print("\nAll tests passed.\n")
+if __name__ == "__main__":
+    main()
+
+=== ../proteomics_sim/chromatography.py ===
+import numpy as np
+def peak(rt, abundance, t, width=8):
+    sigma=width/2.355
+    return abundance*np.exp(-((t-rt)**2)/(2*sigma**2))
+
+=== ../proteomics_sim/dda.py ===
+import pandas as pd
+try:
+    from .chromatography import peak
+    from .fragmentation import fragment_efficiency
+except ImportError:
+    from chromatography import peak
+    from fragmentation import fragment_efficiency
+def acquire(peptides,time_axis,topn=10,dynamic_exclusion=5):
+    exclusion={}; rows=[]
+    for t in time_axis:
+        active=[]
+        for r in peptides.itertuples():
+            inten=peak(r.rt,r.abundance,t)
+            if inten>100: active.append((r,inten))
+        active.sort(key=lambda x:x[1],reverse=True)
+        sel=[]
+        for r,inten in active:
+            if r.peptide_id in exclusion and t<exclusion[r.peptide_id]: continue
+            exclusion[r.peptide_id]=t+dynamic_exclusion
+            sel.append((r,inten))
+            if len(sel)>=topn: break
+        for r,inten in sel:
+            rows.append((r.peptide_id,inten*fragment_efficiency(27+3*r.charge,r.optimal_ce)))
+    return pd.DataFrame(rows,columns=["peptide_id","ms2"]).groupby("peptide_id",as_index=False).sum()
+
+=== ../proteomics_sim/digest.py ===
+import numpy as np, pandas as pd
+def generate_peptides(n=5000, gradient_length_sec=1320, seed=42):
+    rng = np.random.default_rng(seed)
+    return pd.DataFrame({"peptide_id": range(n), "protein_id":
+                rng.integers(0, 800, n), "mz":
+                rng.uniform(400, 1300, n), "charge":
+                rng.choice([2, 3, 4], n, p=[0.6, 0.3, 0.1]), "rt":
+                rng.uniform(0.05 * gradient_length_sec, 0.95 * gradient_length_sec, n), "abundance":
+                10 ** rng.uniform(3, 7, n), "length":
+                rng.integers(7, 35, n), "optimal_ce":
+                rng.normal(30, 4, n)})
+
+=== ../proteomics_sim/example.py ===
+from simulator import ProteomicsStudy
+import matplotlib.pyplot as plt
+study = ProteomicsStudy(seed=42)
+results = study.run(n_peptides=1000, n_replicates=10, gradient_min=22, dia_window=2.0)
+ms1 = results["ms1"]
+dda = results["dda"]
+dia = results["dia"]
+cv = results["cv"]
+cv_dia = results.get("cv_dia")
+print("Simulation complete")
+print(f"MS1 peptides : {cv.shape[0]}")
+print(f"DDA selections : {dda.shape[0]}")
+print(f"DIA windows : {dia[['low','high']].drop_duplicates().shape[0]}")
+fig, axes = plt.subplots(2, 2, figsize=(12, 10))
+axes[0, 0].hist(cv["cv"].dropna(), bins=40, color="tab:blue", alpha=0.8)
+axes[0, 0].set_title("MS1 CV distribution")
+axes[0, 0].set_xlabel("CV (%)")
+axes[0, 0].set_ylabel("Peptides")
+dda_counts = dda.groupby("peptide_id").size()
+axes[0, 1].hist(dda_counts, bins=30, color="tab:orange", alpha=0.8)
+axes[0, 1].set_title("DDA selections per peptide")
+axes[0, 1].set_xlabel("Selections")
+axes[0, 1].set_ylabel("Peptides")
+dia_mean = dia.groupby(["low", "high"])["signal"].mean().reset_index()
+axes[1, 0].plot(dia_mean["low"], dia_mean["signal"], marker="o", linestyle="-", markersize=3)
+axes[1, 0].set_title("Mean DIA window signal")
+axes[1, 0].set_xlabel("Window low m/z")
+axes[1, 0].set_ylabel("Mean signal")
+if cv_dia is not None and not cv_dia["cv"].dropna().empty:
+    axes[1, 1].hist(cv_dia["cv"].dropna(), bins=40, color="tab:green", alpha=0.8)
+    axes[1, 1].set_title("DIA window CV distribution")
+    axes[1, 1].set_xlabel("CV (%)")
+    axes[1, 1].set_ylabel("Windows")
+else:
+    axes[1, 1].text(0.5, 0.5, "DIA CV not available", ha="center", va="center")
+    axes[1, 1].set_xticks([])
+    axes[1, 1].set_yticks([])
+fig.tight_layout()
+plt.show()
+
+=== ../proteomics_sim/fragmentation.py ===
+import numpy as np
+def fragment_efficiency(ce,opt_ce,sigma=4):
+    return np.exp(-((ce-opt_ce)**2)/(2*sigma**2))
+
+=== ../proteomics_sim/__init__.py ===
+from .simulator import ProteomicsStudy
+
+=== ../proteomics_sim/ndia.py ===
+import pandas as pd, numpy as np
+try:
+    from .chromatography import peak
+    from .fragmentation import fragment_efficiency
+except ImportError:
+    from chromatography import peak
+    from fragmentation import fragment_efficiency
+def acquire(peptides,time_axis,window=2.0):
+    out=[]
+    bins=np.arange(400,1300+window,window)
+    mz=peptides.mz.values
+    dt = time_axis[1]-time_axis[0] if len(time_axis)>1 else 1.0
+    for low in bins[:-1]:
+        high = low + window
+        idx = np.where((mz>=low)&(mz<high))[0]
+        if len(idx)==0: continue
+        s = 0.0
+        for t in time_axis:
+            for i in idx:
+                r = peptides.iloc[i]
+                s += peak(r.rt,r.abundance,t) * fragment_efficiency(30,r.optimal_ce,5) * dt
+        out.append((low,high,s))
+    return pd.DataFrame(out,columns=["low","high","signal"])
+
+=== ../proteomics_sim/quantification.py ===
+import pandas as pd
+def cv_table(df,col,groupby="peptide_id"):
+    x=df.groupby(groupby)[col].agg(["mean","std"])
+    x["cv"]=100*x["std"]/x["mean"]
+    return x
+
+=== ../proteomics_sim/run_paper_like_study.py ===
+from simulator import ProteomicsStudy
+s=ProteomicsStudy()
+r=s.run(n_peptides=5000,n_replicates=30,dia_window=2.0)
+print(r["cv"].describe())
+
+=== ../proteomics_sim/simulator.py ===
+import numpy as np,pandas as pd
+try:
+    from .digest import generate_peptides
+    from .chromatography import peak
+    from .dda import acquire as dda_acquire
+    from .ndia import acquire as dia_acquire
+    from .quantification import cv_table
+except ImportError:
+    from digest import generate_peptides
+    from chromatography import peak
+    from dda import acquire as dda_acquire
+    from ndia import acquire as dia_acquire
+    from quantification import cv_table
+def trapz(y, x=None, dx=1.0):
+    y = np.asarray(y)
+    if x is None:
+        return np.sum((y[:-1] + y[1:]) * 0.5) * dx
+    x = np.asarray(x)
+    return np.sum((y[:-1] + y[1:]) * 0.5 * np.diff(x))
+class ProteomicsStudy:
+    def __init__(self, seed=42):
+        self.seed = seed
+    def run(self, n_peptides=5000, n_replicates=3, gradient_min=22, dia_window=2.0):
+        gradient_length_sec = gradient_min * 60
+        pep = generate_peptides(n=n_peptides, gradient_length_sec=gradient_length_sec, seed=self.seed)
+        t = np.arange(0, gradient_length_sec, 0.6)
+        ms1_all = []
+        dda_all = []
+        dia_all = []
+        rng = np.random.default_rng(self.seed)
+        for rep in range(n_replicates):
+            pep_rep = pep.copy()
+            pep_rep["rt"] = pep_rep["rt"] + rng.normal(0, 0.4, size=len(pep_rep))
+            pep_rep["abundance"] = pep_rep["abundance"] * rng.lognormal(0, 0.15, size=len(pep_rep))
+            rows = []
+            for r in pep_rep.itertuples():
+                trace = peak(r.rt, r.abundance, t)
+                area = trapz(trace, x=t)
+                rows.append((r.peptide_id, r.protein_id, area, rep))
+            ms1 = pd.DataFrame(rows, columns=["peptide_id", "protein_id", "ms1_area", "rep"])
+            dda = dda_acquire(pep_rep, t)
+            dda["rep"] = rep
+            dia = dia_acquire(pep_rep, t, dia_window)
+            dia["rep"] = rep
+            ms1_all.append(ms1)
+            dda_all.append(dda)
+            dia_all.append(dia)
+        ms1_all = pd.concat(ms1_all, ignore_index=True)
+        dda_all = pd.concat(dda_all, ignore_index=True)
+        dia_all = pd.concat(dia_all, ignore_index=True)
+        return {
+            "ms1": ms1_all,
+            "dda": dda_all,
+            "dia": dia_all,
+            "cv": cv_table(ms1_all, "ms1_area"),
+            "cv_dia": cv_table(dia_all, "signal", groupby=["low", "high"])
+        }
+
+=== ../proteomics_sim/test.py ===
+from simulator import ProteomicsStudy
+# -----------------------------
+# Run simulation
+# -----------------------------
+N_PEPTIDES = 100
+N_REPLICATES = 30
+GRADIENT_MIN = 22
+DIA_WINDOW = 2.0
+print("Proteomics Simulation")
+print(f"Peptides : {N_PEPTIDES}")
+print(f"Replicates : {N_REPLICATES}")
+print(f"Gradient : {GRADIENT_MIN} min")
+print(f"DIA window : {DIA_WINDOW} Th")
+results = ProteomicsStudy(seed=42).run(n_peptides=N_PEPTIDES, n_replicates=N_REPLICATES, gradient_min=GRADIENT_MIN, dia_window=DIA_WINDOW,)
+# -----------------------------
+# Extract tables
+# -----------------------------
+ms1 = results["ms1"]
+dda = results["dda"]
+dia = results["dia"]
+cv = results["cv"]
+# -----------------------------
+# Basic statistics
+# -----------------------------
+print("PEPTIDE POPULATION")
+print(f"Total peptides : {len(cv)}")
+print(f"Total proteins : {ms1['protein_id'].nunique()}")
+# -----------------------------
+# Detection statistics
+# -----------------------------
+valid_cv = cv["cv"].dropna()
+detected = len(valid_cv)
+print("DETECTION")
+print(f"Detected peptides : {detected}")
+print(f"Missing peptides : {len(cv) - detected}")
+print(f"Detection rate : {100*detected/len(cv):.1f}%")
+# -----------------------------
+# Quantification precision
+# -----------------------------
+print("MS1 QUANTIFICATION")
+print(f"Median CV : {valid_cv.median():.2f}%")
+print(f"Mean CV : {valid_cv.mean():.2f}%")
+print(f"Best CV : {valid_cv.min():.2f}%")
+print(f"Worst CV : {valid_cv.max():.2f}%")
+print(f"CV < 10% : {(valid_cv < 10).mean()*100:.1f}%")
+print(f"CV < 20% : {(valid_cv < 20).mean()*100:.1f}%")
+print(f"CV < 30% : {(valid_cv < 30).mean()*100:.1f}%")
+# -----------------------------
+# DDA summary
+# -----------------------------
+print("DDA ACQUISITION")
+dda_ids = dda["peptide_id"].nunique()
+print(f"Identified peptides : {dda_ids}")
+print(f"Coverage : {100*dda_ids/len(cv):.1f}%")
+dda_counts = (dda.groupby("peptide_id").size().sort_values(ascending=False))
+print("DDA SELECTION STATISTICS")
+print("Median selections :", dda_counts.median())
+print("Mean selections   :", dda_counts.mean())
+print("Max selections    :", dda_counts.max())
+# -----------------------------
+# DIA summary
+# -----------------------------
+print("nDIA ACQUISITION")
+print(f"DIA windows : {len(dia)}")
+signal_windows = (dia["signal"] > 0).sum()
+print(f"Active windows : {signal_windows}")
+# -----------------------------
+# Intensity distribution
+# -----------------------------
+print("INTENSITY")
+print(f"Median MS1 area : "
+    f"{ms1['ms1_area'].median():.3e}")
+print(f"Max MS1 area : "
+    f"{ms1['ms1_area'].max():.3e}")
+print(f"Min non-zero area : "
+    f"{ms1.loc[ms1['ms1_area']>0,'ms1_area'].min():.3e}")
+# -----------------------------
+# Top peptides
+# -----------------------------
+print("TOP 10 PEPTIDES BY MEAN INTENSITY")
+top = (cv
+    .sort_values("mean", ascending=False)
+    .head(10))
+print(top[["mean", "cv"]])
+print("END OF REPORT")
+
