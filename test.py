@@ -1,9 +1,8 @@
 from simulator import ProteomicsStudy
-import numpy as np
 # -----------------------------
 # Run simulation
 # -----------------------------
-N_PEPTIDES = 1000
+N_PEPTIDES = 100
 N_REPLICATES = 30
 GRADIENT_MIN = 22
 DIA_WINDOW = 2.0

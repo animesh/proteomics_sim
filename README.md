@@ -131,6 +131,7 @@ Provides:
 * Gaussian peak model
 * peak integration
 * retention-time behavior
+* peak width interpreted as chromatographic full width at half maximum (FWHM)
 
 ---
 
@@ -166,6 +167,7 @@ Provides:
 * fixed-width windows
 * systematic precursor coverage
 * fixed collision energy
+* per-window precursor density as `n_precursors`
 
 ---
 
@@ -195,6 +197,31 @@ into a complete simulated experiment.
 
 ---
 
+## Example plots
+
+The repository includes `example.py`, which runs a small simulation and saves plot files into a `plots/` folder.
+
+The saved filenames are generated from the simulation parameters, for example:
+
+* `plots/summary_n1000_rep10_g22_w2.0.png`
+* `plots/chromatogram_stacks_n1000_rep10_g22_w2.0.png`
+
+The summary plot shows:
+
+* MS1 coefficient-of-variation distribution
+* DDA selected peptide counts per peptide
+* average DIA window signal
+* DIA window CV distribution when available
+
+The stacked chromatogram plot shows:
+
+* left panel: per-replicate DDA chromatograms with black tick marks indicating picked DDA acquisition times
+* right panel: a per-replicate DIA window heatmap showing the number of precursors in each m/z window
+
+Each replicate is labeled by its replicate number, so the stacked view is interpreted as replicate index rather than raw intensity units.
+
+---
+
 # Installation
 
 Clone repository:
@@ -221,8 +248,10 @@ venv\Scripts\activate
 Install dependencies:
 
 ```bash
-pip install numpy pandas
+pip install numpy pandas matplotlib
 ```
+
+Optional plotting support is provided by `matplotlib` for `example.py`.
 
 ---
 
@@ -314,7 +343,9 @@ The smoke test validates core functionality for:
 * `quantification.cv_table`
 * `ProteomicsStudy.run`
 
-The example script exercises the full reporting workflow and prints summary statistics for MS1, DDA, and DIA results.
+The example script exercises the full reporting workflow, generates plots, and prints summary statistics for MS1, DDA, and DIA results.
+
+The simulator now also computes DIA window CVs in `results["cv_dia"]`.
 
 If all checks pass, the check script prints `All tests passed.` and exits normally.
 
