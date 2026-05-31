@@ -1,114 +1,103 @@
-
 import numpy as np
-import pandas as pd
 
-try:
-    from .digest import generate_peptides
-    from .chromatography import peak
-    from .dda import acquire as dda_acquire
-    from .ndia import acquire as dia_acquire
-    from .quantification import cv_table
-except ImportError:
-    from digest import generate_peptides
-    from chromatography import peak
-    from dda import acquire as dda_acquire
-    from ndia import acquire as dia_acquire
-    from quantification import cv_table
+from peptides import generate_peptides
+from fragmentation import fragments
+from dda import acquire as dda_acquire
+from dia import acquire as dia_acquire
+from scoring import score_against_library
+from chromatography import assign_chromatography
 
-def trapz(y, x=None, dx=1.0):
-    y = np.asarray(y)
 
-    if x is None:
-        return np.sum((y[:-1] + y[1:]) * 0.5) * dx
+def _fragment_vector(masses):
+    vec = {}
+    for m in masses:
+        key = int(round(m))
+        vec[key] = vec.get(key, 0) + 1
+    return vec
 
-    x = np.asarray(x)
-    return np.sum((y[:-1] + y[1:]) * 0.5 * np.diff(x))
 
-class ProteomicsStudy:
+def _ms2_abundance(abundance, masses):
+    if not masses:
+        return 0.0
+    return float(abundance) / len(masses)
 
-    def __init__(self, seed=42):
-        self.seed = seed
 
-    def run(self, n_peptides=5000, n_replicates=3,
-            gradient_min=22, dia_window=2.0):
-
-        gradient_length_sec = gradient_min * 60
-        print(f"Starting simulation: n_peptides={n_peptides}, n_replicates={n_replicates}, gradient_min={gradient_min}, dia_window={dia_window}")
-        print(f"Gradient length: {gradient_length_sec} sec, time sampling 0.6 sec")
-
-        pep = generate_peptides(
-            n=n_peptides,
-            gradient_length_sec=gradient_length_sec,
-            seed=self.seed
+class Simulator:
+    def run(self, n_peptides=1000, window=20, gradient_min=22, topn=10, scan_interval=0.6):
+        peps = generate_peptides(n_peptides)
+        peps_chrom = assign_chromatography(
+            peps,
+            rt_min=0.0,
+            rt_max=gradient_min * 60.0,
+            intensity=1.0
         )
 
-        print(f"Generated peptide library: {len(pep)} peptides")
+        library = {}
+        for p in peps:
+            masses = fragments(p[1])
+            library[p[0]] = {
+                'sequence': p[1],
+                'masses': masses,
+                'vector': _fragment_vector(masses)
+            }
+        vectors = {pid: info['vector'] for pid, info in library.items()}
 
-        t = np.arange(0, gradient_length_sec, 0.6)
+        time_axis = np.arange(0.0, gradient_min * 60.0 + scan_interval, scan_interval)
 
-        ms1_all = []
-        dda_all = []
-        dia_all = []
+        dda_candidates = dda_acquire(peps_chrom, time_axis, topn=topn)
+        selected_unique = []
+        seen = set()
+        for peptide in dda_candidates:
+            if peptide[0] not in seen:
+                seen.add(peptide[0])
+                selected_unique.append(peptide)
 
-        rng = np.random.default_rng(self.seed)
+        dda = []
+        for peptide in selected_unique:
+            scores = score_against_library(vectors[peptide[0]], vectors)
+            masses = library[peptide[0]]['masses']
+            n_fragments = len(masses)
+            dda.append({
+                'peptide': peptide,
+                'scores': scores,
+                'n_fragments': n_fragments,
+                'ms2_abundance': _ms2_abundance(peptide[5], masses)
+            })
 
-        for rep in range(n_replicates):
-            print(f"\n=== Replicate {rep+1}/{n_replicates} ===")
-            print("Applying RT drift and abundance variability")
+        dia_bins = dia_acquire(peps_chrom, window)
+        dia = {}
+        for low, peptides in dia_bins.items():
+            window_spectrum = {}
+            for peptide in peptides:
+                for key, value in vectors[peptide[0]].items():
+                    window_spectrum[key] = window_spectrum.get(key, 0) + value
+            window_scores = score_against_library(window_spectrum, vectors)
+            window_items = []
+            for peptide in peptides:
+                masses = library[peptide[0]]['masses']
+                n_fragments = len(masses)
+                window_items.append({
+                    'peptide': peptide,
+                    'scores': window_scores,
+                    'n_fragments': n_fragments,
+                    'ms2_abundance': round(_ms2_abundance(peptide[5], masses), 4)
+                })
+            dia[low] = window_items
 
-            pep_rep = pep.copy()
-
-            pep_rep["rt"] += rng.normal(0, 0.4, len(pep_rep))
-            pep_rep["abundance"] *= rng.lognormal(0, 0.15, len(pep_rep))
-
-            print("Simulating MS1 chromatograms and peak integration")
-            rows = []
-
-            for r in pep_rep.itertuples():
-                trace = peak(r.rt, r.abundance, t)
-                area = trapz(trace, x=t)
-
-                rows.append(
-                    (r.peptide_id, r.protein_id, area, rep)
-                )
-
-            ms1 = pd.DataFrame(
-                rows,
-                columns=[
-                    "peptide_id",
-                    "protein_id",
-                    "ms1_area",
-                    "rep"
-                ]
-            )
-
-            print("Running DDA acquisition")
-            dda = dda_acquire(pep_rep, t)
-            dda["rep"] = rep
-
-            print("Running DIA window acquisition")
-            dia = dia_acquire(pep_rep, t, dia_window)
-            dia["rep"] = rep
-
-            ms1_all.append(ms1)
-            dda_all.append(dda)
-            dia_all.append(dia)
-
-        ms1_all = pd.concat(ms1_all, ignore_index=True)
-        dda_all = pd.concat(dda_all, ignore_index=True)
-        dia_all = pd.concat(dia_all, ignore_index=True)
-        print(f"Finished simulation: total MS1 rows={len(ms1_all)}, DDA rows={len(dda_all)}, DIA rows={len(dia_all)}")
+        chromatogram = {
+            'peptides': peps_chrom,
+            'time_axis': time_axis.tolist()
+        }
 
         return {
-            "ms1": ms1_all,
-            "dda": dda_all,
-            "dia": dia_all,
-            "cv": cv_table(ms1_all, "ms1_area"),
-            "completeness": float(ms1_all["ms1_area"].notna().mean()*100),
-            "identified_peptides": int(dda_all["peptide_id"].nunique()) if len(dda_all)>0 else 0,
-            "cv_dia": cv_table(
-                dia_all,
-                "signal",
-                groupby=["low", "high"]
-            )
+            'peptides': peps,
+            'chromatogram': chromatogram,
+            'ms1': chromatogram,
+            'dda': dda,
+            'dia': dia,
+            'ms2': {
+                'dda': dda,
+                'dia': dia
+            },
+            'library': library
         }

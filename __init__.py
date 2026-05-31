@@ -1,1 +1,1 @@
-from .simulator import ProteomicsStudy
+from .simulator import Simulator

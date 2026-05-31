@@ -1,12 +1,8 @@
 
 import numpy as np
 import pandas as pd
-try:
-    from .chromatography import peak
-    from .fragmentation import fragment_efficiency
-except ImportError:
-    from chromatography import peak
-    from fragmentation import fragment_efficiency
+from chromatography import peak
+from fragmentation import fragment_efficiency
 
 def acquire(peptides, time_axis, window=2.0, interference_alpha=0.05):
     out=[]

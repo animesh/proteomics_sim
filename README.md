@@ -5,6 +5,167 @@ Repository:
 
 [proteomics_sim GitHub Repository](https://github.com/animesh/proteomics_sim)
 
+```mermaid
+flowchart TD
+    GeneratePeptides[Generate peptides] --> AssignChromatography[Assign chromatography and RT]
+    GeneratePeptides --> BuildLibrary[Build peptide fragment library]
+    AssignChromatography --> Chromatogram[Chromatogram with precursor RT/intensity]
+    Chromatogram --> DDA[DDA top-N precursor selection]
+    Chromatogram --> DIA[DIA window grouping]
+    BuildLibrary --> LibraryVectors[Create fragment vectors]
+    DDA --> DDA_Scoring[Score DDA precursors against library]
+    DIA --> DIA_Scoring[Score DIA windows against library]
+    LibraryVectors --> DDA_Scoring
+    LibraryVectors --> DIA_Scoring
+    DDA_Scoring --> DDA_Results[DDA results with per-peptide scores]
+    DIA_Scoring --> DIA_Results[DIA results with per-peptide scores]
+```
+
+---
+### example.py
+
+Minimal example script.
+
+Prints generated peptides, MS1 peptide metrics, DDA selections, and DIA window peptide assignments with MS2 proxy and scoring.
+
+Example command:
+
+```bash
+python -m py_compile example.py
+python example.py --n_peptides 200 --gradient_min 10 --window 2 --topn 1
+```
+
+Optional plot output:
+
+```bash
+python example.py --n_peptides 20 --gradient_min 10 --window 2 --topn 1 --plot
+```
+
+This creates a plot from the same `example.py` run with current peptide `mz`, `rt`, and abundance values.
+
+![Example chromatogram](plots/example_n20_g10p0_w2p0_topn1_chromatogram.png)
+
+The generated plot filename includes the run arguments, for example:
+
+```text
+plots/example_n20_g10p0_w2p0_topn1_chromatogram.png
+```
+
+This run generated 200 peptides, assigned linear retention times by precursor m/z, and assigned each peptide a random MS1 abundance uniformly drawn from [0, 1]. It selected top-1 DDA precursors per scan using a chromatographic intensity model, and grouped DIA precursors into 2 Th windows using precursor m/z.
+
+Important detail:
+* DDA is time-aware: it evaluates peptide intensity at each scan time using the peptide RT and abundance.
+* DIA currently ignores retention time and only bins precursors by m/z window.
+* DIA still carries MS1 abundance as the peptide's assigned `abundance` value from `assign_chromatography()`.
+* MS2 abundance is a proxy derived from MS1 abundance divided by number of fragments; the window-level total sums peptide MS1 abundances when multiple peptides fall in the same DIA window.
+* `scores` are computed in `simulator.py` with `scoring.score_against_library(...)`, and are attached to each selected DDA peptide and each peptide in every DIA window.
+* DIA scoring uses a combined window-level fragment spectrum. For windows with multiple precursors, the same `scores` dictionary is shared across all peptides in that window, so the output is now reported as a window-level `top_matches` summary instead of a repeated per-peptide `top_match`.
+
+Validation:
+* Compiled `example.py` using `python -m py_compile example.py` to ensure the script is syntactically valid.
+* Executed the script with `python example.py --n_peptides 200 --gradient_min 10 --window 2 --topn 1`.
+* Confirmed output contains DIA windows with 2 peptides and window-level best matches, e.g.:
+
+```text
+window 996.0 - 998.0: 2 peptides
+  window top_matches: AHLHFKLM (0.7071), RVHQEILC (0.7071)
+```
+
+DIA cofragmentation example:
+* `python -m py_compile example.py`
+* `python example.py --n_peptides 200 --gradient_min 10 --window 2 --topn 1`
+* The output shows DIA windows with multiple precursors and a shared window-level score summary.
+
+This demonstrates the corrected behavior: when a DIA window contains multiple precursors, the output shows the top one or two library matches for the combined window spectrum, rather than repeating the same match for each precursor.
+
+DDA coelution note:
+* DDA uses a time-aware Gaussian intensity model and selects only the top `topn` precursors per scan.
+* With `topn=1`, a weaker peptide that coelutes within the same peak can be missed.
+* Example validation command:
+
+```bash
+python -m py_compile example.py
+python example.py --n_peptides 100 --gradient_min 10 --window 2 --topn 1
+```
+
+The updated `example.py` now prints a DDA coelution check after the DDA summary. When a close RT pair is found, it shows whether both peptides were selected.
+
+Expected DDA coelution check output format:
+
+```text
+DDA coelution check:
+  closest RT separation: 6.0606 seconds
+  peptide1 selected: True id=36 seq=VCNIDCA rt=0.0000 abundance=0.9389
+  peptide2 selected: False id=72 seq=TLRACSPQ rt=6.0606 abundance=0.0426
+```
+
+This shows that two peptides separated by about 6 seconds in RT can overlap enough for the weaker peptide to be missed when `topn=1`.
+
+Sample output from the default run `python example.py`:
+
+```text
+Generated peptides:
+(0, 'AKIIFEVDWQ', 1247, 1248.007)
+(1, 'ADHITYAV', 888, 889.007)
+(2, 'VQIRWKAGQMKFH', 1627, 1628.007)
+
+MS1 summary:
+  precursor count: 3
+  total abundance: 2.0552
+  mean abundance: 0.6851
+
+MS1 peptides:
+  id=0 seq=AKIIFEVDWQ mz=1248.0070 rt=30.0000 abundance=0.5491
+  id=1 seq=ADHITYAV mz=889.0070 rt=0.0000 abundance=0.7505
+  id=2 seq=VQIRWKAGQMKFH mz=1628.0070 rt=60.0000 abundance=0.7556
+
+DDA selected peptides with MS2 proxy and scoring:
+  id=1 seq=ADHITYAV mz=889.0070 rt=0.0000 abundance=0.7505 n_fragments=14 ms2_abundance=0.0536 top_match=ADHITYAV (1.0000)
+    scores={0: 0.063, 1: 1.0, 2: 0.0546}
+  id=0 seq=AKIIFEVDWQ mz=1248.0070 rt=30.0000 abundance=0.5491 n_fragments=18 ms2_abundance=0.0305 top_match=AKIIFEVDWQ (1.0000)
+    scores={0: 1.0, 1: 0.063, 2: 0.0}
+  id=2 seq=VQIRWKAGQMKFH mz=1628.0070 rt=60.0000 abundance=0.7556 n_fragments=24 ms2_abundance=0.0315 top_match=VQIRWKAGQMKFH (1.0000)
+    scores={0: 0.0, 1: 0.0546, 2: 1.0}
+
+DDA MS2 summary: 3 DDA spectra selected
+  total MS1 abundance selected: 2.0552
+  total MS2 abundance proxy: 2.0552
+  mean MS2 abundance per fragment: 0.0385
+
+DIA windows with MS2 proxy per window and scoring:
+  window 888.0 - 890.0: 1 peptides
+    window top_matches: ADHITYAV (1.0000)
+    id=1 seq=ADHITYAV mz=889.0070 rt=0.0000 abundance=0.7505 n_fragments=14 ms2_abundance=0.0536
+      scores={0: 0.063, 1: 1.0, 2: 0.0546}
+  window 1248.0 - 1250.0: 1 peptides
+    window top_matches: AKIIFEVDWQ (1.0000)
+    id=0 seq=AKIIFEVDWQ mz=1248.0070 rt=30.0000 abundance=0.5491 n_fragments=18 ms2_abundance=0.0305
+      scores={0: 1.0, 1: 0.063, 2: 0.0}
+  window 1628.0 - 1630.0: 1 peptides
+    window top_matches: VQIRWKAGQMKFH (1.0000)
+    id=2 seq=VQIRWKAGQMKFH mz=1628.0070 rt=60.0000 abundance=0.7556 n_fragments=24 ms2_abundance=0.0315
+      scores={0: 0.0, 1: 0.0546, 2: 1.0}
+
+DIA MS2 summary: 3 DIA windows generated
+  total MS2 abundance proxy across DIA peptides: 2.0554
+```
+
+Explanation of fields:
+* `Generated peptides:` shows the initial peptide list as `(id, sequence, mass, mz)`.
+* `MS1 summary:` reports the number of precursors, total MS1 abundance, and mean abundance.
+* `MS1 peptides:` shows the retained `id`, `sequence`, `mz`, assigned retention time `rt`, and random MS1 `abundance`.
+* In `DDA selected peptides...`, each selected peptide is scored against the library:
+  * `n_fragments` is the number of fragment ions generated for that peptide.
+  * `ms2_abundance` is a proxy equal to MS1 abundance divided by `n_fragments`.
+  * `top_match` is the best-matching library peptide sequence plus its best cosine score.
+  * `scores` is the per-library-peptide cosine similarity dictionary used for scoring.
+* `DDA MS2 summary:` totals the selected MS1 abundance, proxy MS2 abundance, and mean per-fragment abundance.
+* In `DIA windows...`, each window groups precursors by m/z:
+  * `window low - high` shows the isolation window bounds.
+  * `window top_matches` lists the top one or two library matches for the combined window spectrum.
+  * Each peptide line shows the same peptide-level metadata as DDA, but `scores` are shared window-level scores.
+* `DIA MS2 summary:` reports the number of windows and the total proxy MS2 abundance across all peptides. 
+
 ---
 
 # Motivation
@@ -61,178 +222,141 @@ The simulator is inspired by the paper but does not reproduce instrument firmwar
 
 Current implementation includes:
 
-* Synthetic peptide generation
-* Protein assignment
-* Chromatographic peak simulation
-* Retention-time drift
-* Ionization variability
-* DDA acquisition
-* nDIA acquisition
-* Dynamic exclusion
-* Collision-energy modeling
-* MS1 quantification
-* MS2 quantification
-* CV estimation
-* Data completeness estimation
+* random peptide sequence generation with fixed amino acid masses
+* precursor m/z assignment and linear retention-time assignment from m/z to RT
+* random MS1 abundance assignment for each peptide drawn uniformly from [0, 1]
+* MS2 abundance proxy derived from MS1 abundance by dividing that value across the peptide's fragment ions
+* chromatogram-aware DDA precursor selection using top-N per scan
+* fixed-width DIA window precursor grouping (m/z only; RT is currently ignored for DIA binning)
+* library-preserving fragment vector construction for every peptide
+* DDA and DIA scoring against the full peptide fragment library
+* structured output containing peptide records and per-peptide `scores` dictionaries
 
 Current implementation does not include:
 
-* Real peptide identification
+* realistic chromatographic peak modeling
+* retention-time drift
+* ionization variability
+* true MS1/MS2 intensity modeling
+* peptide identification
 * FDR estimation
 * DIA deconvolution
-* Protein inference
-* PTM localization
-* Match-between-runs
-* Spectral libraries
-* Isotope envelopes
-* Orbitrap transient simulation
-* Astral detector simulation
+* protein inference
+* isotope envelopes
+* instrument physics
 
 ---
 
-# Repository Structure
+## Repository structure
 
 ```text
 proteomics_sim/
-├── __init__.py
-├── digest.py
-├── chromatography.py
-├── fragmentation.py
-├── dda.py
-├── ndia.py
-├── quantification.py
-├── simulator.py
-├── run_paper_like_study.py
-├── example.py
-└── check.py
+|-- __init__.py
+|-- check.py
+|-- compare_windows.py
+|-- chromatography.py
+|-- dda.py
+|-- dia.py
+|-- digest.py
+|-- example.py
+|-- fragmentation.py
+|-- ndia.py
+|-- peptides.py
+|-- quantification.py
+|-- README.md
+|-- run_paper_like_study.py
+|-- scoring.py
+|-- simulator.py
+|-- test.py
+\-- plots/
 ```
 
-## digest.py
+## Key modules
 
-Synthetic proteome generation.
+### peptides.py
+
+Random peptide sequence generation.
 
 Generates:
 
-* proteins
-* peptides
-* charge states
-* abundances
-* precursor m/z values
-* retention times
+* peptide IDs
+* amino acid sequences
+* peptide mass
+* approximate precursor m/z
 
 ---
 
-## chromatography.py
+### fragmentation.py
 
-Chromatographic simulation.
+Fragment ion generation.
 
-Provides:
-
-* Gaussian peak model
-* peak integration
-* retention-time behavior
-* peak width interpreted as chromatographic full width at half maximum (FWHM)
+Generates basic b/y ion masses for a peptide sequence.
 
 ---
 
-## fragmentation.py
+### dda.py
 
-Fragmentation efficiency model.
+Data-dependent acquisition placeholder.
 
-Provides:
-
-* peptide-specific optimal collision energies
-* fragmentation efficiency penalties
+Performs a top-N precursor selection over the peptide list.
 
 ---
 
-## dda.py
+### dia.py
 
-Data-dependent acquisition.
+Data-independent acquisition placeholder.
 
-Provides:
-
-* Top-N selection
-* dynamic exclusion
-* charge-dependent collision energy
+Groups precursor records into fixed m/z windows. In the current implementation, DIA ignores peptide RT/time and does not model chromatographic coelution; it still carries per-precursor MS1 abundance in the peptide tuple.
 
 ---
 
-## ndia.py
+### simulator.py
 
-Narrow-window DIA acquisition.
+Simulation orchestration.
 
-Provides:
+Runs peptide generation, MS1 chromatography assignment, DDA selection, DIA binning, fragment library construction, and scoring.
 
-* fixed-width windows
-* systematic precursor coverage
-* fixed collision energy
-* per-window precursor density as `n_precursors`
+MS1 abundance is assigned randomly per peptide, and MS2 abundance is derived from the peptide abundance divided by the number of fragments.
 
----
+Returns a dictionary containing:
 
-## quantification.py
-
-Quantitative analysis.
-
-Provides:
-
-* coefficient of variation calculations
-* peptide-level summaries
+* `peptides`
+* `chromatogram`
+* `ms1`
+* `dda`
+* `dia`
+* `ms2`
+* `library`
 
 ---
 
-## simulator.py
+### compare_windows.py
 
-Main orchestration layer.
+A small DIA window width sweep helper.
 
-Combines:
-
-* peptide generation
-* chromatography
-* acquisition
-* quantification
-
-into a complete simulated experiment.
+Runs the simulator for a set of window widths and reports per-window precursor counts.
 
 ---
 
-## Example plots
 
-The repository includes `example.py`, which runs a small simulation and saves plot files into a `plots/` folder.
+### scoring.py
 
-The saved filenames are generated from the simulation parameters, for example:
+Small scoring utility module.
 
-* `plots/summary_n1000_rep10_g22_w2.0.png`
-* `plots/chromatogram_stacks_n1000_rep10_g22_w2.0.png`
-
-The summary plot shows:
-
-* MS1 coefficient-of-variation distribution
-* DDA selected peptide counts per peptide
-* average DIA window signal
-* DIA window CV distribution when available
-
-The stacked chromatogram plot shows:
-
-* left panel: per-replicate DDA chromatograms with black tick marks indicating picked DDA acquisition times
-* right panel: a per-replicate DIA window heatmap showing the number of precursors in each m/z window
-
-Each replicate is labeled by its replicate number, so the stacked view is interpreted as replicate index rather than raw intensity units.
+Provides a dot-product helper function used to score DDA peptides and DIA window fragment collections against the generated fragment library.
 
 ---
 
-# Installation
+## Installation
 
-Clone repository:
+Clone the repository:
 
 ```bash
 git clone https://github.com/animesh/proteomics_sim.git
-
 cd proteomics_sim
 ```
 
-Create environment:
+Optional virtual environment:
 
 ```bash
 python -m venv venv
@@ -245,572 +369,51 @@ Windows:
 venv\Scripts\activate
 ```
 
-Install dependencies:
+Install optional dependencies:
 
 ```bash
-pip install numpy pandas matplotlib
+pip install numpy pandas
 ```
 
-Optional plotting support is provided by `matplotlib` for `example.py`.
+The core simulator requires `numpy`, while some legacy helper scripts still rely on `pandas`.
 
 ---
 
-# Default Parameters
+## Usage
 
-The current implementation uses the following defaults.
-
-## Peptide Population
-
-```python
-n_peptides = 5000
-n_proteins = 800
-```
-
-m/z range:
-
-```python
-400 <= mz <= 1300
-```
-
-Charge states:
-
-```python
-[2,3,4]
-```
-
-Probabilities:
-
-```python
-[0.6,0.3,0.1]
-```
-
-Peptide length:
-
-```python
-7-35 amino acids
-```
-
----
-
-# Usage
-
-Run the simulator directly from the package folder:
-
-```powershell
-cd \Download\proteomics_sim
-python run_paper_like_study.py
-```
-
-Or invoke the main entrypoint interactively:
-
-```powershell
-cd \Download\proteomics_sim
-python -c "from simulator import ProteomicsStudy; r=ProteomicsStudy(seed=42).run(); print(r['cv'].head())"
-```
-
-If you want to import using the package name, run Python from the parent folder:
-
-```powershell
-cd \Download
-python -c "from proteomics_sim import ProteomicsStudy; r=ProteomicsStudy(seed=42).run(); print(r['cv'].head())"
-```
-
-Note: this repository does not currently include packaging metadata like `pyproject.toml` or `setup.py`, so editable install is not available by default.
-
-# Testing
-
-A lightweight smoke test is included in `check.py`.
-
-```powershell
-cd \Download\proteomics_sim
-python check.py
-```
-
-A full simulation example is available in `example.py`.
+Run the current example:
 
 ```powershell
 cd \Download\proteomics_sim
 python example.py
 ```
 
-The smoke test validates core functionality for:
+Run the simulator directly:
 
-* `digest.generate_peptides`
-* `chromatography.peak`
-* `fragmentation.fragment_efficiency`
-* `dda.acquire`
-* `ndia.acquire`
-* `quantification.cv_table`
-* `ProteomicsStudy.run`
-
-The example script exercises the full reporting workflow, generates plots, and prints summary statistics for MS1, DDA, and DIA results.
-
-The simulator now also computes DIA window CVs in `results["cv_dia"]`.
-
-If all checks pass, the check script prints `All tests passed.` and exits normally.
-
-Abundance distribution:
-
-```python
-10**Uniform(3,7)
+```powershell
+cd \Download\proteomics_sim
+python -c "from simulator import Simulator; r=Simulator().run(100, 20); print(r['dda']); print(len(r['dia']))"
 ```
 
-Equivalent range:
-
-```text
-1,000 - 10,000,000 arbitrary units
-```
+The current `__init__.py` export provides `Simulator`, so importing from `simulator` directly remains the recommended path.
 
 ---
 
-## Chromatography
+## Output structure
 
-Gradient:
+`Simulator().run()` returns a dictionary with:
 
-```python
-22 minutes
-```
-
-Time sampling:
-
-```python
-0.6 sec
-```
-
-Peak shape:
-
-```python
-Gaussian
-```
-
-Peak width:
-
-```python
-8 sec
-```
-
-Retention-time drift:
-
-```python
-Normal(0,0.4 sec)
-```
+* `peptides` — generated peptide tuples
+* `chromatogram` — shared chromatogram input used by both DDA and DIA
+* `dda` — selected precursor list with per-peptide DDA scores
+* `dia` — DIA window bins with per-peptide DIA window scores
+* `library` — fragment masses per peptide
 
 ---
 
-## Ionization Variability
+## Notes
 
-Run-to-run ionization variability:
-
-```python
-LogNormal(
-    mean=0,
-    sigma=0.15
-)
-```
-
-Purpose:
-
-* emulate electrospray variation
-* generate realistic CV distributions
-
----
-
-## DDA Defaults
-
-TopN:
-
-```python
-10
-```
-
-Isolation window:
-
-```python
-1.2 Th
-```
-
-Dynamic exclusion:
-
-```python
-5 sec
-```
-
-Collision energy:
-
-```python
-CE = 27 + 3 * charge
-```
-
-Examples:
-
-| Charge | CE |
-| ------ | -- |
-| 2+     | 33 |
-| 3+     | 36 |
-| 4+     | 39 |
-
----
-
-## nDIA Defaults
-
-Window width:
-
-```python
-2.0 Th
-```
-
-Collision energy:
-
-```python
-30
-```
-
-Recommended comparisons:
-
-```python
-1.2 Th
-2.0 Th
-4.0 Th
-```
-
-These correspond to the principal window sizes discussed in the narrow-window DIA publication.
-
----
-
-## Fragmentation Efficiency
-
-Current model:
-
-```python
-efficiency =
-exp(
--(CE-optimal_CE)^2 /
-(2*sigma^2)
-)
-```
-
-Default:
-
-```python
-sigma = 4
-```
-
-Purpose:
-
-* simulate peptide-specific fragmentation preferences
-* generate DDA-only and DIA-only identifications
-
----
-
-## Quantification
-
-Current implementation:
-
-MS1:
-
-```python
-chromatographic peak integration
-```
-
-DDA MS2:
-
-```python
-summed fragment intensity
-```
-
-DIA MS2:
-
-```python
-summed window intensity
-```
-
-No isotope envelopes are currently modeled.
-
----
-
-# Quick Start
-
-```python
-from proteomics_sim import ProteomicsStudy
-
-study = ProteomicsStudy(seed=42)
-
-results = study.run(
-    n_peptides=5000,
-    n_replicates=30,
-    gradient_min=22,
-    dia_window=2.0
-)
-
-print(results["cv"].describe())
-```
-
----
-
-# Understanding run_paper_like_study.py
-
-The script provides a minimal example intended to mimic the conceptual comparisons reported in the narrow-window DIA study.
-
-Current source:
-
-```python
-from proteomics_sim import ProteomicsStudy
-
-s = ProteomicsStudy()
-
-r = s.run(
-    n_peptides=5000,
-    n_replicates=30,
-    dia_window=2.0
-)
-
-print(r["cv"].describe())
-```
-
-## What the Script Simulates
-
-### Step 1
-
-Generate a synthetic proteome.
-
-```text
-5000 peptides
-800 proteins
-```
-
-### Step 2
-
-Assign each peptide:
-
-* abundance
-* precursor m/z
-* retention time
-* charge state
-* optimal collision energy
-
-### Step 3
-
-Generate 30 independent LC-MS runs.
-
-Each replicate receives:
-
-* retention-time drift
-* ionization variability
-
-### Step 4
-
-Simulate DDA acquisition.
-
-```text
-TopN = 10
-Isolation = 1.2 Th
-Dynamic exclusion = 5 sec
-```
-
-### Step 5
-
-Simulate nDIA acquisition.
-
-```text
-Window width = 2.0 Th
-Full precursor coverage
-```
-
-### Step 6
-
-Perform quantification.
-
-Compute:
-
-* MS1 area
-* DDA MS2 signal
-* DIA MS2 signal
-* CV
-
-### Step 7
-
-Return summary tables.
-
----
-
-# Returned Objects
-
-## results["ms1"]
-
-Columns:
-
-```text
-peptide_id
-protein_id
-ms1_area
-rep
-```
-
----
-
-## results["dda"]
-
-Columns:
-
-```text
-peptide_id
-ms2
-rep
-```
-
----
-
-## results["dia"]
-
-Columns:
-
-```text
-low
-high
-signal
-```
-
----
-
-## results["cv"]
-
-Columns:
-
-```text
-mean
-std
-cv
-```
-
----
-
-# Reproducing Paper-Like Experiments
-
-## DIA Window Comparison
-
-```python
-for w in [1.2,2.0,4.0]:
-
-    study.run(
-        dia_window=w
-    )
-```
-
-Question:
-
-How rapidly does DIA become DDA-like as windows narrow?
-
----
-
-## Gradient Comparison
-
-```python
-for g in [5,15,30,60]:
-
-    study.run(
-        gradient_min=g
-    )
-```
-
-Question:
-
-How does chromatographic sampling affect quantitative precision?
-
----
-
-## Replicate Precision
-
-```python
-study.run(
-    n_replicates=30
-)
-```
-
-Question:
-
-What fraction of peptides achieve CV < 20%?
-
----
-
-## Complexity Scaling
-
-```python
-for n in [1000,5000,10000]:
-
-    study.run(
-        n_peptides=n
-    )
-```
-
-Question:
-
-How does acquisition strategy behave as proteome complexity increases?
-
----
-
-# Typical Use Cases
-
-## Teaching
-
-Demonstrate:
-
-* DDA acquisition
-* DIA acquisition
-* chromatographic sampling
-* MS1 versus MS2 quantification
-
-### Method Development
-
-Explore:
-
-* alternative DIA window schemes
-* collision-energy strategies
-* scan scheduling approaches
-
-### Benchmarking
-
-Evaluate:
-
-* completeness
-* precision
-* robustness
-
----
-
-# Planned Features
-
-* tryptic digestion from FASTA
-* isotope envelopes
-* b-ion generation
-* y-ion generation
-* fragment chromatograms
-* DIA deconvolution
-* target-decoy FDR
-* protein inference
-* MaxLFQ rollup
-* phosphoproteomics
-* PTM localization
-* match-between-runs
-* DIA-NN-style processing
-* Orbitrap Astral scheduling models
-
-Optional:
-
-```bash
-pip install pyarrow numba jupyter scipy matplotlib
-```
-
-## Research Planning
-
-Perform in silico experiments before instrument acquisition.
-
-## Software Development
-
-Generate synthetic datasets for:
-
-* search engines
-* quantification tools
-* visualization software
+This repository is a minimal or toy prototype intended for conceptual exploration. It is not a production-grade proteomics engine.
 
 ---
 
@@ -818,7 +421,7 @@ Generate synthetic datasets for:
 
 This repository is a mechanistic simulator. Major simplifications include:
 
-* Gaussian peaks
+* simplified Gaussian peak intensity model used for DDA scan scoring
 * simplified fragmentation
 * no isotope distributions
 * no detector physics
@@ -840,4 +443,6 @@ Areas of particular interest:
 * protein inference
 * benchmarking datasets
 * visualization modules
+
+---
 

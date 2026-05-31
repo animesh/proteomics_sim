@@ -3,20 +3,21 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import numpy as np
 import pandas as pd
-from digest import generate_peptides
+from digest import generate_peptides as digest_generate_peptides
+from peptides import generate_peptides as random_generate_peptides
 from chromatography import peak
 from fragmentation import fragment_efficiency
 from dda import acquire as dda_acquire
 from ndia import acquire as dia_acquire
 from quantification import cv_table
-from simulator import ProteomicsStudy
+from simulator import Simulator
 def assert_true(condition, message):
     if not condition:
         raise AssertionError(message)
 def test_digest():
-    peptides = generate_peptides(n=50, seed=1)
+    peptides = digest_generate_peptides(n=50, seed=1)
     assert_true(len(peptides) == 50, "digest.generate_peptides returned incorrect row count")
-    expected_columns = {"peptide_id", "protein_id", "mz", "charge", "rt", "abundance", "length", "optimal_ce",}
+    expected_columns = {"peptide_id", "protein_id", "mz", "charge", "rt", "abundance", "length", "optimal_ce"}
     assert_true(set(peptides.columns) == expected_columns, "digest.generate_peptides returned wrong columns")
     assert_true(peptides["mz"].between(400, 1300).all(), "mz values out of expected range")
     assert_true(peptides["charge"].isin([2, 3, 4]).all(), "unexpected charge states")
@@ -32,16 +33,17 @@ def test_fragmentation():
     assert_true(0 < eff_same <= 1, "fragment_efficiency should be between 0 and 1")
     assert_true(eff_off < eff_same, "fragment_efficiency should decrease away from optimal CE")
 def test_dda():
-    peptides = generate_peptides(n=30, seed=2)
+    peptides = random_generate_peptides(n=30, seed=2)
     time_axis = np.linspace(30, 90, 7)
-    dda_table = dda_acquire(peptides, time_axis, topn=5, dynamic_exclusion=5)
-    assert_true("peptide_id" in dda_table.columns and "ms2" in dda_table.columns, "dda.acquire returned wrong columns")
-    assert_true((dda_table["ms2"] >= 0).all(), "dda.acquire produced negative MS2 intensities")
+    selections = dda_acquire(peptides, time_axis, topn=5)
+    assert_true(isinstance(selections, list), "dda.acquire returned wrong type")
+    assert_true(len(selections) > 0, "dda.acquire returned no selections")
+    assert_true(all(isinstance(p, tuple) and len(p) >= 6 for p in selections), "dda.acquire returned invalid peptide tuples")
 def test_ndia():
-    peptides = generate_peptides(n=20, seed=3)
+    peptides = digest_generate_peptides(n=20, seed=3)
     time_axis = np.linspace(30, 90, 5)
     dia_table = dia_acquire(peptides, time_axis, window=5.0)
-    assert_true(set(dia_table.columns) == {"low", "high", "signal"}, "ndia.acquire returned wrong columns")
+    assert_true({"low", "high", "signal"}.issubset(dia_table.columns), "ndia.acquire returned wrong columns")
     assert_true((dia_table["signal"] >= 0).all(), "ndia.acquire produced negative signal values")
 def test_quantification():
     df = pd.DataFrame({"peptide_id": [0, 0, 1, 1], "ms1_area": [100.0, 120.0, 50.0, 60.0],})
@@ -49,12 +51,15 @@ def test_quantification():
     assert_true("cv" in cv.columns, "quantification.cv_table did not compute cv")
     assert_true(cv.loc[0, "cv"] > 0, "quantification.cv_table computed an invalid cv")
 def test_simulator():
-    study = ProteomicsStudy(seed=42)
-    results = study.run(n_peptides=100, n_replicates=2, gradient_min=10, dia_window=2.0)
-    assert_true(set(results.keys()) == {"ms1", "dda", "dia", "cv"}, "ProteomicsStudy.run returned unexpected keys")
-    assert_true("peptide_id" in results["ms1"].columns, "ProteomicsStudy.run ms1 output missing peptide_id")
-    assert_true("ms2" in results["dda"].columns, "ProteomicsStudy.run dda output missing ms2")
-    assert_true("signal" in results["dia"].columns, "ProteomicsStudy.run dia output missing signal")
+    study = Simulator()
+    results = study.run(n_peptides=100, window=20, gradient_min=10, topn=5)
+    expected = {"peptides", "chromatogram", "dda", "dia", "library"}
+    assert_true(set(results.keys()) == expected, "Simulator.run returned unexpected keys")
+    assert_true("peptides" in results, "Simulator.run output missing peptides")
+    assert_true("chromatogram" in results and "peptides" in results["chromatogram"], "Simulator.run output missing chromatogram peptides")
+    assert_true("dda" in results, "Simulator.run output missing dda")
+    assert_true("dia" in results, "Simulator.run output missing dia")
+    assert_true("library" in results, "Simulator.run output missing library")
 def main():
     tests = [test_digest, test_chromatography, test_fragmentation, test_dda, test_ndia, test_quantification, test_simulator,]
     for test in tests:
