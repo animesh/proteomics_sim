@@ -104,6 +104,8 @@ class ProteomicsStudy:
             "dda": dda_all,
             "dia": dia_all,
             "cv": cv_table(ms1_all, "ms1_area"),
+            "completeness": float(ms1_all["ms1_area"].notna().mean()*100),
+            "identified_peptides": int(dda_all["peptide_id"].nunique()) if len(dda_all)>0 else 0,
             "cv_dia": cv_table(
                 dia_all,
                 "signal",
