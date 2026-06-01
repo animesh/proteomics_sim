@@ -130,7 +130,9 @@ if coeluting_pair:
 print('\nDIA windows with MS2 proxy per window and scoring:')
 ms2_dia_total = 0.0
 for low, peptides in sorted(r['ms2']['dia'].items()):
-    print(f'  window {low} - {low + args.window}: {len(peptides)} peptides')
+    precursor_count = len(peptides)
+    label = 'precursor' if precursor_count == 1 else 'precursors'
+    print(f'  window {low} - {low + args.window}: {precursor_count} {label}')
     if peptides:
         window_scores = peptides[0]['scores']
         top_n = min(len(peptides), 2)
@@ -145,6 +147,7 @@ for low, peptides in sorted(r['ms2']['dia'].items()):
         print(
             f'    id={peptide[0]} seq={peptide[1]} mz={peptide[3]:.4f} rt={peptide[4]:.4f} '
             f'abundance={peptide[5]:.4f} n_fragments={item["n_fragments"]} '
+            f'trace_points={item["trace_points"]} chrom_area={item["chrom_area"]:.2f} '
             f'ms2_abundance={item["ms2_abundance"]:.4f}'
         )
         rounded_scores = {k: round(v, 4) for k, v in item['scores'].items()}

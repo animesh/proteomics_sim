@@ -1,6 +1,8 @@
+
 import random
 AA='ACDEFGHIKLMNPQRSTVWY'
 MASS={a:m for a,m in zip(AA,[71,103,115,129,147,57,137,113,128,113,131,114,97,128,156,87,101,99,186,163])}
+
 def generate_peptides(n=1000,min_len=7,max_len=25,seed=42):
     random.seed(seed)
     peps=[]

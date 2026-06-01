@@ -6,6 +6,7 @@ import pandas as pd
 from digest import generate_peptides as digest_generate_peptides
 from peptides import generate_peptides as random_generate_peptides
 from chromatography import peak
+from chrom_assign import assign_chromatography
 from fragmentation import fragment_efficiency
 from dda import acquire as dda_acquire
 from ndia import acquire as dia_acquire
@@ -34,11 +35,21 @@ def test_fragmentation():
     assert_true(eff_off < eff_same, "fragment_efficiency should decrease away from optimal CE")
 def test_dda():
     peptides = random_generate_peptides(n=30, seed=2)
+    peptides = assign_chromatography(peptides, rt_max=90.0)
     time_axis = np.linspace(30, 90, 7)
     selections = dda_acquire(peptides, time_axis, topn=5)
     assert_true(isinstance(selections, list), "dda.acquire returned wrong type")
     assert_true(len(selections) > 0, "dda.acquire returned no selections")
-    assert_true(all(isinstance(p, tuple) and len(p) >= 6 for p in selections), "dda.acquire returned invalid peptide tuples")
+    assert_true(
+        all(
+            isinstance(obs, tuple)
+            and len(obs) == 3
+            and isinstance(obs[1], tuple)
+            and len(obs[1]) >= 6
+            for obs in selections
+        ),
+        "dda.acquire returned invalid selection tuples"
+    )
 def test_ndia():
     peptides = digest_generate_peptides(n=20, seed=3)
     time_axis = np.linspace(30, 90, 5)
@@ -53,13 +64,16 @@ def test_quantification():
 def test_simulator():
     study = Simulator()
     results = study.run(n_peptides=100, window=20, gradient_min=10, topn=5)
-    expected = {"peptides", "chromatogram", "dda", "dia", "library"}
+    expected = {"library", "peptides", "chromatogram", "ms1", "ms2", "dda", "dia", "metrics"}
     assert_true(set(results.keys()) == expected, "Simulator.run returned unexpected keys")
     assert_true("peptides" in results, "Simulator.run output missing peptides")
     assert_true("chromatogram" in results and "peptides" in results["chromatogram"], "Simulator.run output missing chromatogram peptides")
+    assert_true("ms1" in results and "peptides" in results["ms1"], "Simulator.run output missing ms1 peptides")
     assert_true("dda" in results, "Simulator.run output missing dda")
     assert_true("dia" in results, "Simulator.run output missing dia")
     assert_true("library" in results, "Simulator.run output missing library")
+    assert_true("ms2" in results and "dda" in results["ms2"] and "dia" in results["ms2"], "Simulator.run output missing ms2 structure")
+    assert_true("metrics" in results, "Simulator.run output missing metrics")
 def main():
     tests = [test_digest, test_chromatography, test_fragmentation, test_dda, test_ndia, test_quantification, test_simulator,]
     for test in tests:

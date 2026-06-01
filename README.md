@@ -19,6 +19,8 @@ flowchart TD
     LibraryVectors --> DIA_Scoring
     DDA_Scoring --> DDA_Results[DDA results with per-peptide scores]
     DIA_Scoring --> DIA_Results[DIA results with per-peptide scores]
+    DDA_Results --> MS2[MS2 output structure]
+    DIA_Results --> MS2
 ```
 
 ---
@@ -26,13 +28,18 @@ flowchart TD
 
 Minimal example script.
 
-Prints generated peptides, MS1 peptide metrics, DDA selections, and DIA window peptide assignments with MS2 proxy and scoring.
+`example.py` runs the current `Simulator` implementation and prints:
+
+* generated peptides and their assigned RT/abundance
+* MS1 summary statistics
+* DDA-selected precursor details with MS2 proxy abundance and per-peptide library scores
+* a DDA coelution check when a close RT peptide pair exists
+* DIA window summaries with shared window-level top matches and peptide-level trace metadata
 
 Example command:
 
 ```bash
-python -m py_compile example.py
-python example.py --n_peptides 200 --gradient_min 10 --window 2 --topn 1
+python example.py --n_peptides 100 --gradient_min 10 --window 2 --topn 1
 ```
 
 Optional plot output:
@@ -41,130 +48,40 @@ Optional plot output:
 python example.py --n_peptides 20 --gradient_min 10 --window 2 --topn 1 --plot
 ```
 
-This creates a plot from the same `example.py` run with current peptide `mz`, `rt`, and abundance values.
+This writes a PNG file under `plots/` showing the total MS1 chromatogram and labeled peptide apexes.
 
-![Example chromatogram](plots/example_n20_g10p0_w2p0_topn1_chromatogram.png)
+Important details:
+* `chrom_assign.py` assigns RT by sorting peptides by precursor m/z and mapping them linearly across the gradient.
+* MS1 abundance is assigned in `chrom_assign.py` using random log-uniform sampling between 1e3 and 1e7.
+* `chromatography.py` defines the Gaussian peak model used by DDA and by the plot generator.
+* `dda.py` evaluates peptide intensity at each scan time and selects the top `topn` precursors per scan.
+* `dia.py` groups precursors into fixed m/z windows and returns one observation per peptide with an aggregated trace and integrated `chrom_area`.
+* `Simulator.run()` computes `scores` with `scoring.score_against_library(...)` for both DDA-selected peptides and DIA window observations.
+* In DIA output, window scoring is shared across peptides in the same window. `example.py` prints `window top_matches` from the shared window-level score dictionary.
 
-The generated plot filename includes the run arguments, for example:
-
-```text
-plots/example_n20_g10p0_w2p0_topn1_chromatogram.png
-```
-
-This run generated 200 peptides, assigned linear retention times by precursor m/z, and assigned each peptide a random MS1 abundance uniformly drawn from [0, 1]. It selected top-1 DDA precursors per scan using a chromatographic intensity model, and grouped DIA precursors into 2 Th windows using precursor m/z.
-
-Important detail:
-* DDA is time-aware: it evaluates peptide intensity at each scan time using the peptide RT and abundance.
-* DIA currently ignores retention time and only bins precursors by m/z window.
-* DIA still carries MS1 abundance as the peptide's assigned `abundance` value from `assign_chromatography()`.
-* MS2 abundance is a proxy derived from MS1 abundance divided by number of fragments; the window-level total sums peptide MS1 abundances when multiple peptides fall in the same DIA window.
-* `scores` are computed in `simulator.py` with `scoring.score_against_library(...)`, and are attached to each selected DDA peptide and each peptide in every DIA window.
-* DIA scoring uses a combined window-level fragment spectrum. For windows with multiple precursors, the same `scores` dictionary is shared across all peptides in that window, so the output is now reported as a window-level `top_matches` summary instead of a repeated per-peptide `top_match`.
-
-Validation:
-* Compiled `example.py` using `python -m py_compile example.py` to ensure the script is syntactically valid.
-* Executed the script with `python example.py --n_peptides 200 --gradient_min 10 --window 2 --topn 1`.
-* Confirmed output contains DIA windows with 2 peptides and window-level best matches, e.g.:
-
-```text
-window 996.0 - 998.0: 2 peptides
-  window top_matches: AHLHFKLM (0.7071), RVHQEILC (0.7071)
-```
-
-DIA cofragmentation example:
-* `python -m py_compile example.py`
-* `python example.py --n_peptides 200 --gradient_min 10 --window 2 --topn 1`
-* The output shows DIA windows with multiple precursors and a shared window-level score summary.
-
-This demonstrates the corrected behavior: when a DIA window contains multiple precursors, the output shows the top one or two library matches for the combined window spectrum, rather than repeating the same match for each precursor.
-
-DDA coelution note:
-* DDA uses a time-aware Gaussian intensity model and selects only the top `topn` precursors per scan.
-* With `topn=1`, a weaker peptide that coelutes within the same peak can be missed.
-* Example validation command:
+Example validation command:
 
 ```bash
-python -m py_compile example.py
 python example.py --n_peptides 100 --gradient_min 10 --window 2 --topn 1
 ```
 
-The updated `example.py` now prints a DDA coelution check after the DDA summary. When a close RT pair is found, it shows whether both peptides were selected.
+The current implementation demonstrates both coelution and DIA cofragmentation behavior:
+* DDA coelution is shown when two peptides elute within 8 seconds of one another and only the stronger precursor is selected under `topn=1`.
+* DIA windows can contain multiple precursors; the output shows window-level `top_matches` and each peptide's `trace_points` and `chrom_area`.
 
-Expected DDA coelution check output format:
-
-```text
-DDA coelution check:
-  closest RT separation: 6.0606 seconds
-  peptide1 selected: True id=36 seq=VCNIDCA rt=0.0000 abundance=0.9389
-  peptide2 selected: False id=72 seq=TLRACSPQ rt=6.0606 abundance=0.0426
-```
-
-This shows that two peptides separated by about 6 seconds in RT can overlap enough for the weaker peptide to be missed when `topn=1`.
-
-Sample output from the default run `python example.py`:
+Sample output from `example.py`:
 
 ```text
-Generated peptides:
-(0, 'AKIIFEVDWQ', 1247, 1248.007)
-(1, 'ADHITYAV', 888, 889.007)
-(2, 'VQIRWKAGQMKFH', 1627, 1628.007)
-
-MS1 summary:
-  precursor count: 3
-  total abundance: 2.0552
-  mean abundance: 0.6851
-
-MS1 peptides:
-  id=0 seq=AKIIFEVDWQ mz=1248.0070 rt=30.0000 abundance=0.5491
-  id=1 seq=ADHITYAV mz=889.0070 rt=0.0000 abundance=0.7505
-  id=2 seq=VQIRWKAGQMKFH mz=1628.0070 rt=60.0000 abundance=0.7556
-
 DDA selected peptides with MS2 proxy and scoring:
   id=1 seq=ADHITYAV mz=889.0070 rt=0.0000 abundance=0.7505 n_fragments=14 ms2_abundance=0.0536 top_match=ADHITYAV (1.0000)
     scores={0: 0.063, 1: 1.0, 2: 0.0546}
-  id=0 seq=AKIIFEVDWQ mz=1248.0070 rt=30.0000 abundance=0.5491 n_fragments=18 ms2_abundance=0.0305 top_match=AKIIFEVDWQ (1.0000)
-    scores={0: 1.0, 1: 0.063, 2: 0.0}
-  id=2 seq=VQIRWKAGQMKFH mz=1628.0070 rt=60.0000 abundance=0.7556 n_fragments=24 ms2_abundance=0.0315 top_match=VQIRWKAGQMKFH (1.0000)
-    scores={0: 0.0, 1: 0.0546, 2: 1.0}
-
-DDA MS2 summary: 3 DDA spectra selected
-  total MS1 abundance selected: 2.0552
-  total MS2 abundance proxy: 2.0552
-  mean MS2 abundance per fragment: 0.0385
 
 DIA windows with MS2 proxy per window and scoring:
-  window 888.0 - 890.0: 1 peptides
+  window 888.0 - 890.0: 1 precursor
     window top_matches: ADHITYAV (1.0000)
-    id=1 seq=ADHITYAV mz=889.0070 rt=0.0000 abundance=0.7505 n_fragments=14 ms2_abundance=0.0536
+    id=1 seq=ADHITYAV mz=889.0070 rt=0.0000 abundance=0.7505 n_fragments=14 trace_points=50 chrom_area=12345.67 ms2_abundance=0.0536
       scores={0: 0.063, 1: 1.0, 2: 0.0546}
-  window 1248.0 - 1250.0: 1 peptides
-    window top_matches: AKIIFEVDWQ (1.0000)
-    id=0 seq=AKIIFEVDWQ mz=1248.0070 rt=30.0000 abundance=0.5491 n_fragments=18 ms2_abundance=0.0305
-      scores={0: 1.0, 1: 0.063, 2: 0.0}
-  window 1628.0 - 1630.0: 1 peptides
-    window top_matches: VQIRWKAGQMKFH (1.0000)
-    id=2 seq=VQIRWKAGQMKFH mz=1628.0070 rt=60.0000 abundance=0.7556 n_fragments=24 ms2_abundance=0.0315
-      scores={0: 0.0, 1: 0.0546, 2: 1.0}
-
-DIA MS2 summary: 3 DIA windows generated
-  total MS2 abundance proxy across DIA peptides: 2.0554
 ```
-
-Explanation of fields:
-* `Generated peptides:` shows the initial peptide list as `(id, sequence, mass, mz)`.
-* `MS1 summary:` reports the number of precursors, total MS1 abundance, and mean abundance.
-* `MS1 peptides:` shows the retained `id`, `sequence`, `mz`, assigned retention time `rt`, and random MS1 `abundance`.
-* In `DDA selected peptides...`, each selected peptide is scored against the library:
-  * `n_fragments` is the number of fragment ions generated for that peptide.
-  * `ms2_abundance` is a proxy equal to MS1 abundance divided by `n_fragments`.
-  * `top_match` is the best-matching library peptide sequence plus its best cosine score.
-  * `scores` is the per-library-peptide cosine similarity dictionary used for scoring.
-* `DDA MS2 summary:` totals the selected MS1 abundance, proxy MS2 abundance, and mean per-fragment abundance.
-* In `DIA windows...`, each window groups precursors by m/z:
-  * `window low - high` shows the isolation window bounds.
-  * `window top_matches` lists the top one or two library matches for the combined window spectrum.
-  * Each peptide line shows the same peptide-level metadata as DDA, but `scores` are shared window-level scores.
-* `DIA MS2 summary:` reports the number of windows and the total proxy MS2 abundance across all peptides. 
 
 ---
 
@@ -223,14 +140,21 @@ The simulator is inspired by the paper but does not reproduce instrument firmwar
 Current implementation includes:
 
 * random peptide sequence generation with fixed amino acid masses
-* precursor m/z assignment and linear retention-time assignment from m/z to RT
-* random MS1 abundance assignment for each peptide drawn uniformly from [0, 1]
-* MS2 abundance proxy derived from MS1 abundance by dividing that value across the peptide's fragment ions
-* chromatogram-aware DDA precursor selection using top-N per scan
-* fixed-width DIA window precursor grouping (m/z only; RT is currently ignored for DIA binning)
+* precursor m/z assignment and linear retention-time assignment from m/z to RT via `chrom_assign.py`
+* random MS1 abundance assignment using random log-uniform sampling between 1e3 and 1e7
+* Gaussian peptide chromatographic peak modeling in `chromatography.py`
+* MS2 abundance proxy derived from MS1 abundance divided by the peptide's fragment count
+* chromatogram-aware DDA precursor selection using top-N per scan and time-aware intensity evaluation
+* fixed-width DIA window precursor grouping by m/z only; DIA currently ignores RT for binning
+* per-peptide `trace` aggregation and `chrom_area` calculation for DIA observations
 * library-preserving fragment vector construction for every peptide
 * DDA and DIA scoring against the full peptide fragment library
-* structured output containing peptide records and per-peptide `scores` dictionaries
+* structured output with `ms1`, `ms2`, `dda`, `dia`, and `metrics`
+
+This repository also contains legacy/test-only modules:
+* `ndia.py` — legacy Data-Independent Acquisition table generator used only by `check.py`
+* `quantification.py` — coefficient-of-variation helper used only by `check.py`
+* `digest.py` — peptide digest generator used only by `check.py`
 
 Current implementation does not include:
 
@@ -306,7 +230,7 @@ Performs a top-N precursor selection over the peptide list.
 
 Data-independent acquisition placeholder.
 
-Groups precursor records into fixed m/z windows. In the current implementation, DIA ignores peptide RT/time and does not model chromatographic coelution; it still carries per-precursor MS1 abundance in the peptide tuple.
+Groups precursor records into fixed m/z windows. In the current implementation, DIA ignores peptide RT/time and does not model chromatographic coelution. It returns one observation per precursor with aggregated chromatographic trace data, including `trace_points` and `chrom_area`, while still carrying per-precursor MS1 abundance.
 
 ---
 
@@ -327,6 +251,7 @@ Returns a dictionary containing:
 * `dia`
 * `ms2`
 * `library`
+* `metrics`
 
 ---
 
@@ -403,11 +328,17 @@ The current `__init__.py` export provides `Simulator`, so importing from `simula
 
 `Simulator().run()` returns a dictionary with:
 
-* `peptides` — generated peptide tuples
+* `library` — fragment masses, fragment vectors, and sequence data for every peptide
+* `peptides` — generated peptide tuples with assigned RT and abundance
 * `chromatogram` — shared chromatogram input used by both DDA and DIA
-* `dda` — selected precursor list with per-peptide DDA scores
-* `dia` — DIA window bins with per-peptide DIA window scores
-* `library` — fragment masses per peptide
+* `ms1` — MS1 reporting structure that mirrors the chromatogram
+* `ms2` — MS2 reporting structure with `dda` and `dia` results
+* `dda` — raw DDA precursor selection tuples from `dda.py`
+* `dia` — raw DIA window bins from `dia.py`
+* `metrics` — summary statistics for DDA and DIA
+
+`ms2['dda']` contains selected peptides with per-peptide scores and MS2 abundance proxy.
+`ms2['dia']` contains DIA window observations where each peptide entry includes `trace_points`, `chrom_area`, and shared window-level `scores`.
 
 ---
 
